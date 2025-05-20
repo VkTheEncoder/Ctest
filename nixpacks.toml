@@ -2,7 +2,7 @@
 
 [phases.setup]
 # Install tesseract (and any other system packages you need)
-packages = ["tesseract"]
+packages = ["tesseract", "ffmpeg"]
 
 [phases.build]
 # Install your Python dependencies
