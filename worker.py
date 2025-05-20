@@ -42,7 +42,7 @@ def extract_frames(video_path: str, interval: float = 1.0):
     fps = cap.get(cv2.CAP_PROP_FPS)
     frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
     if fps <= 0 or frame_count <= 0:
-        raise RuntimeError("Failed to read FPS or frame count from video.")
+        raise RuntimeError("Failed to read FPS or frame count.")
 
     duration = frame_count / fps
     frames = []
@@ -60,37 +60,44 @@ def extract_frames(video_path: str, interval: float = 1.0):
     return frames
 
 def process_video_task(file_id, user_id, chat_id, message_id, bot_token, **kwargs):
+    # Create bot instance
     worker_bot = Bot(token=bot_token)
 
-    # 1) Download the video inside the worker
+    # 1) Download the video into this worker's filesystem
     os.makedirs('downloads', exist_ok=True)
     video_path = os.path.join('downloads', f"{user_id}_{file_id}.mp4")
-    tg_file = worker_bot.get_file(file_id)
+    tg_file    = worker_bot.get_file(file_id)
     tg_file.download(custom_path=video_path)
 
     try:
+        # 10%
         worker_bot.edit_message_text(chat_id=chat_id, message_id=message_id,
                                      text="📊 10% - Extracting frames…")
         frames = extract_frames(video_path)
 
+        # 40%
         worker_bot.edit_message_text(chat_id=chat_id, message_id=message_id,
                                      text="📊 40% - Detecting subtitle regions…")
         regions = extract_subtitle_regions(frames)
 
+        # 60%
         worker_bot.edit_message_text(chat_id=chat_id, message_id=message_id,
                                      text="📊 60% - Performing OCR…")
         texts = perform_ocr_with_preprocessing(regions)
 
+        # 80%
         worker_bot.edit_message_text(chat_id=chat_id, message_id=message_id,
                                      text="📊 80% - Filtering languages…")
         english_subs = filter_english_text(texts)
 
+        # 90%
         worker_bot.edit_message_text(chat_id=chat_id, message_id=message_id,
                                      text="📊 90% - Generating SRT…")
         os.makedirs(SUBTITLE_DIR, exist_ok=True)
         srt_path = os.path.join(SUBTITLE_DIR, f"{user_id}.srt")
         generate_srt(english_subs, srt_path)
 
+        # 100%
         worker_bot.edit_message_text(chat_id=chat_id, message_id=message_id,
                                      text="✅ Processing complete! Sending subtitles…")
         with open(srt_path, 'rb') as f:
@@ -104,13 +111,12 @@ def process_video_task(file_id, user_id, chat_id, message_id, bot_token, **kwarg
                                 text=f"❌ Error during processing: {e}")
 
     finally:
-        # cleanup
+        # Cleanup
         if os.path.exists(video_path):
             os.remove(video_path)
         if os.path.exists(srt_path):
             os.remove(srt_path)
 
 if __name__ == '__main__':
-    # Start the RQ worker
     worker = Worker(['subtitle_extraction'], connection=redis_conn)
     worker.work()
