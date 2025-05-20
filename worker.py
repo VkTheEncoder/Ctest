@@ -6,7 +6,7 @@ import pytesseract
 import numpy as np
 from telegram import Bot
 from rq import Worker
-from rq.connections import Connection
+
 from utils.queue_manager import get_redis_conn, SUBTITLE_DIR
 from utils.subtitle_detection import extract_subtitle_regions
 from utils.ocr import perform_ocr_with_preprocessing
@@ -127,6 +127,6 @@ def process_video_task(video_path, user_id, chat_id, message_id, bot_token, **kw
 
 if __name__ == '__main__':
     # Start the RQ worker
-    with Connection(redis_conn):
+    
         worker = Worker(['subtitle_extraction'], connection=redis_conn)
         worker.work()
