@@ -8,8 +8,4 @@ packages = ["tesseract"]
 # Install your Python dependencies
 commands = ["pip install -r requirements.txt"]
 
-[phases.start]
-# Depending on your setup:
-# - If you use separate services/procfile, omit these.
-# - If you run both in one container:
-commands = ["python bot.py", "python worker.py"]
+
