@@ -1,4 +1,6 @@
 import os
+import shutil
+import sys
 import logging
 import cv2
 import pytesseract
@@ -14,6 +16,10 @@ from dotenv import load_dotenv
 # Load env
 load_dotenv()
 
+# Ensure Tesseract binary is installed
+if shutil.which("tesseract") is None:
+    sys.exit("❌ Tesseract binary not found. Please install tesseract in the container.")
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -28,8 +34,7 @@ def format_timestamp(seconds: float) -> str:
 def generate_srt(subs, path):
     with open(path, 'w', encoding='utf-8') as f:
         for i, (text, ts, *_ ) in enumerate(subs, start=1):
-            start = ts
-            end = ts + 2.0
+            start, end = ts, ts + 2.0
             f.write(f"{i}\n")
             f.write(f"{format_timestamp(start)} --> {format_timestamp(end)}\n")
             f.write(f"{text}\n\n")
@@ -60,13 +65,13 @@ def extract_frames(video_path: str, interval: float = 1.0):
     return frames
 
 def process_video_task(file_id, user_id, chat_id, message_id, bot_token, **kwargs):
-    # Create bot instance
     worker_bot = Bot(token=bot_token)
-
-    # 1) Download the video into this worker's filesystem
     os.makedirs('downloads', exist_ok=True)
     video_path = os.path.join('downloads', f"{user_id}_{file_id}.mp4")
-    tg_file    = worker_bot.get_file(file_id)
+    srt_path = None
+
+    # Download
+    tg_file = worker_bot.get_file(file_id)
     tg_file.download(custom_path=video_path)
 
     try:
@@ -101,20 +106,20 @@ def process_video_task(file_id, user_id, chat_id, message_id, bot_token, **kwarg
         worker_bot.edit_message_text(chat_id=chat_id, message_id=message_id,
                                      text="✅ Processing complete! Sending subtitles…")
         with open(srt_path, 'rb') as f:
-            worker_bot.send_document(chat_id=chat_id,
-                                     document=f,
+            worker_bot.send_document(chat_id=chat_id, document=f,
                                      filename="subtitles.srt")
 
+    except pytesseract.pytesseract.TesseractNotFoundError:
+        worker_bot.send_message(chat_id=chat_id,
+                                text="❌ OCR failed: tesseract not found.")
     except Exception as e:
         logger.error(f"Worker error: {e}", exc_info=True)
         worker_bot.send_message(chat_id=chat_id,
                                 text=f"❌ Error during processing: {e}")
-
     finally:
-        # Cleanup
         if os.path.exists(video_path):
             os.remove(video_path)
-        if os.path.exists(srt_path):
+        if srt_path and os.path.exists(srt_path):
             os.remove(srt_path)
 
 if __name__ == '__main__':
