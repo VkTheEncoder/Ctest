@@ -33,11 +33,14 @@ def format_timestamp(seconds: float) -> str:
 
 def generate_srt(subs, path):
     with open(path, 'w', encoding='utf-8') as f:
-        for i, (text, ts, *_ ) in enumerate(subs, start=1):
-            start, end = ts, ts + 2.0
-            f.write(f"{i}\n")
+        for idx, (text, start, *_ ) in enumerate(subs, 1):
+            if idx < len(subs):
+                end = subs[idx][1] - 0.1
+            else:
+                end = start + 3.0
+            f.write(f"{idx}\n")
             f.write(f"{format_timestamp(start)} --> {format_timestamp(end)}\n")
-            f.write(f"{text}\n\n")
+            f.write(text.strip() + "\n\n")
 
 def extract_frames(video_path: str, interval: float = 1.0):
     cap = cv2.VideoCapture(video_path)
@@ -93,7 +96,7 @@ def process_video_task(file_id, user_id, chat_id, message_id, bot_token, **kwarg
         # 80%
         worker_bot.edit_message_text(chat_id=chat_id, message_id=message_id,
                                      text="📊 80% - Filtering languages…")
-        english_subs = filter_english_text(texts)
+        english_subs = filter_english_text(texts, english_only=False)
 
         # 90%
         worker_bot.edit_message_text(chat_id=chat_id, message_id=message_id,
