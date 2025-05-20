@@ -1,11 +1,10 @@
 # nixpacks.toml
-
 [phases.setup]
-# Install tesseract (and any other system packages you need)
-packages = ["tesseract", "ffmpeg"]
+# This tells Nixpacks to install the tesseract binary
+packages = ["tesseract"]
 
 [phases.build]
-# Install your Python dependencies
 commands = ["pip install -r requirements.txt"]
 
-
+[phases.start]
+commands = ["python bot.py", "python worker.py"]
