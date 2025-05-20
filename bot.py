@@ -143,7 +143,7 @@ def webhook_handler():
 # ── Entrypoint ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     # Register webhook with Telegram
-    webhook_url = f"https://ctest-production.up.railway.app/webhook/{TOKEN}"
+    webhook_url = f"https://ctest-production.up.railway.app/webhook/8096088012:AAEC0AQzB0TDhXZ0IBoXUsZn4k_uQDJSiDM"
     bot.set_webhook(webhook_url)
     logger.info(f"Webhook set to {webhook_url}")
 
