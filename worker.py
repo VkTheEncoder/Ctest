@@ -1,19 +1,17 @@
 import os
 import logging
 import cv2
-import ffmpeg
 import pytesseract
 import numpy as np
 from telegram import Bot
 from rq import Worker
-
 from utils.queue_manager import get_redis_conn, SUBTITLE_DIR
 from utils.subtitle_detection import extract_subtitle_regions
 from utils.ocr import perform_ocr_with_preprocessing
 from utils.language_filter import filter_english_text
+from dotenv import load_dotenv
 
 # Load environment variables
-from dotenv import load_dotenv
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
@@ -22,22 +20,23 @@ logger = logging.getLogger(__name__)
 # Redis connection
 redis_conn = get_redis_conn()
 
-# Telegram Bot
+# Telegram Bot client for worker callbacks
 bot = Bot(token=os.getenv('BOT_TOKEN'))
 
+# Ensure output directory exists
 os.makedirs(SUBTITLE_DIR, exist_ok=True)
 
 
-def format_timestamp(seconds):
+def format_timestamp(seconds: float) -> str:
     ms = int((seconds - int(seconds)) * 1000)
     h, rem = divmod(int(seconds), 3600)
     m, s = divmod(rem, 60)
     return f"{h:02}:{m:02}:{s:02},{ms:03}"
 
 
-def generate_srt(subs, path):
+def generate_srt(subtitles: list[tuple[str, float, tuple]], path: str) -> None:
     with open(path, 'w', encoding='utf-8') as f:
-        for i, (text, ts, *_ ) in enumerate(subs, start=1):
+        for i, (text, ts, *_ ) in enumerate(subtitles, start=1):
             start = ts
             end = ts + 2.0
             f.write(f"{i}\n")
@@ -45,12 +44,24 @@ def generate_srt(subs, path):
             f.write(f"{text}\n\n")
 
 
-def extract_frames(video_path, interval=1.0):
-    data = ffmpeg.probe(video_path)
-    duration = float([s for s in data['streams'] if s['codec_type']=='video'][0]['duration'])
+def extract_frames(video_path: str, interval: float = 1.0) -> list[tuple[np.ndarray, float]]:
+    """
+    Open the video with OpenCV, read its FPS & total frames,
+    compute duration, and then grab one frame every `interval` seconds.
+    """
     cap = cv2.VideoCapture(video_path)
-    frames = []
-    t = 0
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open video: {video_path}")
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+    if fps <= 0 or frame_count <= 0:
+        raise RuntimeError("Failed to read FPS or frame count from video.")
+
+    duration = frame_count / fps
+    frames: list[tuple[np.ndarray, float]] = []
+    t = 0.0
+
     while t < duration:
         cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
         ret, frame = cap.read()
@@ -58,6 +69,7 @@ def extract_frames(video_path, interval=1.0):
             break
         frames.append((frame, t))
         t += interval
+
     cap.release()
     return frames
 
@@ -65,6 +77,7 @@ def extract_frames(video_path, interval=1.0):
 def process_video_task(video_path, user_id, chat_id, message_id, bot_token, **kwargs):
     worker_bot = Bot(token=bot_token)
     try:
+        # 10%: start extracting frames
         worker_bot.edit_message_text(
             chat_id=chat_id,
             message_id=message_id,
@@ -72,6 +85,7 @@ def process_video_task(video_path, user_id, chat_id, message_id, bot_token, **kw
         )
         frames = extract_frames(video_path)
 
+        # 40%: detect subtitle regions
         worker_bot.edit_message_text(
             chat_id=chat_id,
             message_id=message_id,
@@ -79,6 +93,7 @@ def process_video_task(video_path, user_id, chat_id, message_id, bot_token, **kw
         )
         regions = extract_subtitle_regions(frames)
 
+        # 60%: perform OCR
         worker_bot.edit_message_text(
             chat_id=chat_id,
             message_id=message_id,
@@ -86,34 +101,38 @@ def process_video_task(video_path, user_id, chat_id, message_id, bot_token, **kw
         )
         texts = perform_ocr_with_preprocessing(regions)
 
+        # 80%: filter languages
         worker_bot.edit_message_text(
             chat_id=chat_id,
             message_id=message_id,
             text="📊 80% - Filtering languages..."
         )
-        eng = filter_english_text(texts)
+        english_subs = filter_english_text(texts)
 
+        # 90%: generate SRT
         worker_bot.edit_message_text(
             chat_id=chat_id,
             message_id=message_id,
             text="📊 90% - Generating SRT..."
         )
         srt_path = os.path.join(SUBTITLE_DIR, f"{user_id}.srt")
-        generate_srt(eng, srt_path)
+        generate_srt(english_subs, srt_path)
 
+        # 100%: send back to user
         worker_bot.edit_message_text(
             chat_id=chat_id,
             message_id=message_id,
-            text="✅ Done! Sending subtitles..."
+            text="✅ Processing complete! Sending subtitles..."
         )
         with open(srt_path, 'rb') as f:
             worker_bot.send_document(
                 chat_id=chat_id,
                 document=f,
                 filename="subtitles.srt",
-                caption="Here are your subtitles."
+                caption="Here are your extracted subtitles!"
             )
 
+        # Cleanup
         os.remove(video_path)
         os.remove(srt_path)
 
@@ -126,7 +145,6 @@ def process_video_task(video_path, user_id, chat_id, message_id, bot_token, **kw
 
 
 if __name__ == '__main__':
-    # Start the RQ worker
-    
-        worker = Worker(['subtitle_extraction'], connection=redis_conn)
-        worker.work()
+    # Start the RQ worker listening on the 'subtitle_extraction' queue
+    worker = Worker(['subtitle_extraction'], connection=redis_conn)
+    worker.work()
