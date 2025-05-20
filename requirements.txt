@@ -1,7 +1,7 @@
 python-telegram-bot>=13.15,<14.0
 redis>=4.5,<5.0
 rq>=1.17,<3.0
-opencv-python>=4.8,<5.0
+opencv-python-headless>=4.8,<5.0
 pytesseract>=0.3,<0.4
 fasttext>=0.9,<1.0
 langdetect>=1.0,<2.0
