@@ -1,0 +1,9 @@
+python-telegram-bot~=13.15
+redis~=4.5
+rq~=1.17
+opencv-python~=4.8
+pytesseract~=0.3
+fasttext~=0.9
+langdetect~=1.0
+ffmpeg-python~=0.2
+python-dotenv~=1.0
