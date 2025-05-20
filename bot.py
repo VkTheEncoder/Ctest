@@ -9,16 +9,18 @@ from telegram.ext import (
 from utils.error_handler import handle_errors
 from utils.queue_manager import get_redis_conn, get_queue
 
+# Load env
 load_dotenv()
 TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_USER_ID', '0'))
-
 if not TOKEN:
     raise RuntimeError("❌ BOT_TOKEN not set in environment.")
 
+# Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Redis & queue
 redis_conn = get_redis_conn()
 video_queue = get_queue()
 
@@ -37,16 +39,15 @@ def handle_video(update: Update, context: CallbackContext):
     if not video:
         return update.message.reply_text("Please send a valid video file.")
 
-    # Acknowledge
+    # Ack
     msg = update.message.reply_text("✅ Video received. Queuing for processing…")
 
-    # Grab the file_id instead of downloading here
-    file_id = video.file_id
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
+    file_id    = video.file_id
+    user_id    = update.effective_user.id
+    chat_id    = update.effective_chat.id
     message_id = msg.message_id
 
-    # Enqueue the job by module path
+    # Enqueue job with named kwargs (no video_path)
     job = video_queue.enqueue(
         'worker.process_video_task',
         file_id=file_id,
@@ -57,12 +58,12 @@ def handle_video(update: Update, context: CallbackContext):
         job_timeout=3600
     )
 
-    # Store job ID
+    # Store job ID for /status
     redis_conn.set(f"job_id:{user_id}_{file_id}", job.id)
 
-    # Update the message to show queue position / job ID
+    # Edit ack to show job ID
     msg.edit_text(f"🎫 Job queued: ID `{job.id[:8]}`\nUse `/status {job.id[:8]}` to check.")
-    
+
 def status_command(update: Update, context: CallbackContext):
     # ... your existing implementation ...
     pass
