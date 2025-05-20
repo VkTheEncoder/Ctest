@@ -5,17 +5,24 @@ import ffmpeg
 import pytesseract
 import numpy as np
 from telegram import Bot
-from rq import Worker, Connection
-from utils.queue_manager import get_redis_conn, get_queue, SUBTITLE_DIR
-from utils.subtitle_detection import extract_subtitle_regions, group_text_contours
+from rq import Worker
+from rq.connections import Connection
+from utils.queue_manager import get_redis_conn, SUBTITLE_DIR
+from utils.subtitle_detection import extract_subtitle_regions
 from utils.ocr import perform_ocr_with_preprocessing
 from utils.language_filter import filter_english_text
+
+# Load environment variables
+from dotenv import load_dotenv
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Redis connection
 redis_conn = get_redis_conn()
-queue = get_queue()
+
+# Telegram Bot
 bot = Bot(token=os.getenv('BOT_TOKEN'))
 
 os.makedirs(SUBTITLE_DIR, exist_ok=True)
@@ -45,9 +52,10 @@ def extract_frames(video_path, interval=1.0):
     frames = []
     t = 0
     while t < duration:
-        cap.set(cv2.CAP_PROP_POS_MSEC, t*1000)
+        cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
         ret, frame = cap.read()
-        if not ret: break
+        if not ret:
+            break
         frames.append((frame, t))
         t += interval
     cap.release()
@@ -55,51 +63,70 @@ def extract_frames(video_path, interval=1.0):
 
 
 def process_video_task(video_path, user_id, chat_id, message_id, bot_token, **kwargs):
-    bot = Bot(token=bot_token)
-
+    worker_bot = Bot(token=bot_token)
     try:
-        # Step 1: extract frames
-        bot.edit_message_text(chat_id=chat_id, message_id=message_id,
-                              text="📊 10% - Extracting frames...")
+        worker_bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text="📊 10% - Extracting frames..."
+        )
         frames = extract_frames(video_path)
 
-        # Step 2: subtitle regions
-        bot.edit_message_text(chat_id=chat_id, message_id=message_id,
-                              text="📊 40% - Detecting subtitle regions...")
+        worker_bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text="📊 40% - Detecting subtitle regions..."
+        )
         regions = extract_subtitle_regions(frames)
 
-        # Step 3: OCR
-        bot.edit_message_text(chat_id=chat_id, message_id=message_id,
-                              text="📊 60% - Performing OCR...")
+        worker_bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text="📊 60% - Performing OCR..."
+        )
         texts = perform_ocr_with_preprocessing(regions)
 
-        # Step 4: filter
-        bot.edit_message_text(chat_id=chat_id, message_id=message_id,
-                              text="📊 80% - Filtering languages...")
+        worker_bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text="📊 80% - Filtering languages..."
+        )
         eng = filter_english_text(texts)
 
-        # Step 5: SRT
-        bot.edit_message_text(chat_id=chat_id, message_id=message_id,
-                              text="📊 90% - Generating SRT...")
+        worker_bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text="📊 90% - Generating SRT..."
+        )
         srt_path = os.path.join(SUBTITLE_DIR, f"{user_id}.srt")
         generate_srt(eng, srt_path)
 
-        bot.edit_message_text(chat_id=chat_id, message_id=message_id,
-                              text="✅ Done! Sending subtitles...")
+        worker_bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text="✅ Done! Sending subtitles..."
+        )
         with open(srt_path, 'rb') as f:
-            bot.send_document(chat_id=chat_id, document=f,
-                              filename="subtitles.srt",
-                              caption="Here are your subtitles.")
+            worker_bot.send_document(
+                chat_id=chat_id,
+                document=f,
+                filename="subtitles.srt",
+                caption="Here are your subtitles."
+            )
 
         os.remove(video_path)
         os.remove(srt_path)
 
     except Exception as e:
         logger.error(f"Worker error: {e}", exc_info=True)
-        bot.send_message(chat_id=chat_id,
-                         text=f"❌ Error during processing: {e}")
+        worker_bot.send_message(
+            chat_id=chat_id,
+            text=f"❌ Error during processing: {e}"
+        )
+
 
 if __name__ == '__main__':
+    # Start the RQ worker
     with Connection(redis_conn):
-        worker = Worker(['subtitle_extraction'])
+        worker = Worker(['subtitle_extraction'], connection=redis_conn)
         worker.work()
