@@ -19,7 +19,7 @@ redis_conn = Redis.from_url(REDIS_URL)
 queue = Queue('subtitle_extraction', connection=redis_conn)
 
 # Tesseract OCR config: whitelist letters, numbers, basic punctuation
-TESSERACT_CONFIG = r"--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,?!'\" "
+TESSERACT_CONFIG = "--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,?!" "
 
 # Ensure output directory exists
 os.makedirs('downloads', exist_ok=True)
