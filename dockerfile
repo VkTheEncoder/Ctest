@@ -1,28 +1,25 @@
-# 1. Base image
+# 1) Base image
 FROM python:3.12-slim
 
-# 2. Install system dependencies for OCR, video, and OpenCV
+# 2) Install system dependencies for OCR, video, and OpenCV headless
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       tesseract-ocr \
       ffmpeg \
       libgl1-mesa-glx && \
-    rm -rf /var/lib/apt/lists
+    rm -rf /var/lib/apt/lists/*
 
-# 3. Set working directory
+# 3) Set your working directory
 WORKDIR /app
 
-# 4. Copy & install Python requirements
+# 4) Copy & install Python requirements
 COPY requirements.txt .
 RUN pip install --upgrade pip setuptools wheel && \
     pip install -r requirements.txt
 
-# 5. Copy application source
+# 5) Copy the rest of your code
 COPY . .
 
-# 6. Expose port if you’re using webhooks (optional)
-# EXPOSE 8080
-
-# 7. Default command: start both bot and worker
-#    They’ll run in parallel inside one container.
+# 6) When the container launches, start BOTH processes in parallel
+#    (use "&" so the shell background‐launches them both)
 CMD ["bash", "-lc", "python bot.py & python worker.py"]
