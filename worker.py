@@ -9,127 +9,111 @@ from rq import Worker
 from dotenv import load_dotenv
 from utils.queue_manager import get_redis_conn, SUBTITLE_DIR
 
-# ── Load env & init logging ────────────────────────────────────────────────────
+# ── Init ────────────────────────────────────────────────────────────────────────
 load_dotenv()
-TOKEN     = os.getenv("BOT_TOKEN")
+TOKEN      = os.getenv("BOT_TOKEN")
 redis_conn = get_redis_conn()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ── Tesseract config ──────────────────────────────────────────────────────────
-TESSERACT_CONFIG = (
-    "--oem 3 --psm 7 "
-    "-c tessedit_char_whitelist="
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "abcdefghijklmnopqrstuvwxyz"
-    "0123456789"
-    "?!.,:;() "
-)
-
 # ── Helpers ────────────────────────────────────────────────────────────────────
-def format_timestamp(sec: float) -> str:
-    total_ms = int(round(sec * 1000))
-    ms = total_ms % 1000
-    s = (total_ms // 1000) % 60
-    m = (total_ms // 60000) % 60
-    h = total_ms // 3600000
+def format_ts(sec: float) -> str:
+    ms = int((sec - int(sec)) * 1000)
+    h, rem = divmod(int(sec), 3600)
+    m, s   = divmod(rem, 60)
     return f"{h:02}:{m:02}:{s:02},{ms:03}"
 
-def write_srt(cues: list[tuple[str, float]], out_path: str) -> None:
-    with open(out_path, "w", encoding="utf-8") as f:
-        for i, (text, start) in enumerate(cues, start=1):
+def write_srt(cues, path):
+    with open(path, "w", encoding="utf-8") as f:
+        for i, (txt, start) in enumerate(cues, 1):
             if i < len(cues):
-                end = max(start + 0.05, cues[i][1] - 0.05)
+                end = max(start + 0.1, cues[i][1] - 0.05)
             else:
                 end = start + 2.0
             f.write(f"{i}\n")
-            f.write(f"{format_timestamp(start)} --> {format_timestamp(end)}\n")
-            f.write(text + "\n\n")
+            f.write(f"{format_ts(start)} --> {format_ts(end)}\n")
+            f.write(txt + "\n\n")
 
-def safe_edit(bot: Bot, chat_id: int, message_id: int, text: str):
+def safe_edit(bot, chat_id, msg_id, text):
     try:
-        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text)
+        bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=text)
     except BadRequest as e:
-        logger.warning(f"[safe_edit] could not edit message {message_id} in chat {chat_id}: {e}")
+        logger.warning(f"edit failed: {e}")
 
-def safe_send_document(bot: Bot, chat_id: int, path: str, filename: str = "subtitles.srt"):
+def safe_send(bot, chat_id, path):
     try:
-        with open(path, "rb") as f:
-            bot.send_document(chat_id=chat_id, document=f, filename=filename)
+        with open(path,"rb") as doc:
+            bot.send_document(chat_id, doc, filename="subtitles.srt")
     except BadRequest as e:
-        logger.warning(f"[safe_send_document] could not send document to chat {chat_id}: {e}")
+        logger.warning(f"send failed: {e}")
 
-def ocr_bottom(frame: np.ndarray) -> str:
+def ocr_simple(frame):
+    """Crop bottom 25%, threshold, invert if needed, OCR."""
     h, w = frame.shape[:2]
-    roi = frame[int(h*0.8):, :]
-
+    roi  = frame[int(h*0.75):, :]
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    blur = cv2.bilateralFilter(gray, 9, 75, 75)
-    _, th1 = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    th = cv2.bitwise_not(th1) if np.mean(th1) > 127 else th1
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3,3))
-    th = cv2.morphologyEx(th, cv2.MORPH_CLOSE, kernel, iterations=2)
+    # Adaptive thresholding
+    th = cv2.adaptiveThreshold(
+        gray, 255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY, 15, 3
+    )
+    # If text is white on dark bg, invert
+    if np.mean(th) < 127:
+        th = cv2.bitwise_not(th)
+    # OCR without whitelist
+    return pytesseract.image_to_string(th, lang='eng').strip()
 
-    return pytesseract.image_to_string(th, config=TESSERACT_CONFIG).strip()
-
-def extract_frames(video_path: str, interval_s: float = 0.5):
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise RuntimeError(f"Could not open video: {video_path}")
-
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    total = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-    duration = total / fps if fps > 0 else 0
+def extract_frames(path, interval=0.5):
+    cap = cv2.VideoCapture(path)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25
+    total = cap.get(cv2.CAP_PROP_FRAME_COUNT) or (fps*1)
+    duration = total / fps
     t = 0.0
     while t < duration:
-        cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
+        cap.set(cv2.CAP_PROP_POS_MSEC, t*1000)
         ret, frame = cap.read()
         if not ret:
             break
         yield frame, t
-        t += interval_s
+        t += interval
     cap.release()
 
-# ── Main processing task ───────────────────────────────────────────────────────
+# ── The RQ Task ────────────────────────────────────────────────────────────────
 def process_video_task(file_id, user_id, chat_id, message_id, bot_token, **_):
     bot = Bot(token=bot_token)
     os.makedirs("downloads", exist_ok=True)
     os.makedirs(SUBTITLE_DIR, exist_ok=True)
-    video_path = os.path.join("downloads", f"{user_id}_{file_id}.mp4")
-    srt_path   = os.path.join(SUBTITLE_DIR, f"{user_id}.srt")
+    vp = f"downloads/{user_id}_{file_id}.mp4"
+    sp = f"{SUBTITLE_DIR}/{user_id}.srt"
 
-    # Download video
-    tgfile = bot.get_file(file_id)
-    tgfile.download(custom_path=video_path)
+    # Download the video
+    tg = bot.get_file(file_id)
+    tg.download(custom_path=vp)
 
     try:
-        safe_edit(bot, chat_id, message_id, "🔄 Extracting subtitles…")
-        cues = []
-        last = None
-        for frame, ts in extract_frames(video_path):
-            txt = ocr_bottom(frame)
-            if txt and txt != last:
-                cues.append((txt, ts))
-                last = txt
+        safe_edit(bot, chat_id, message_id, "⏳ Extracting subtitles…")
+        cues, last = [], None
+        for frame, ts in extract_frames(vp):
+            text = ocr_simple(frame)
+            if text and text != last:
+                cues.append((text, ts))
+                last = text
 
-        write_srt(cues, srt_path)
+        write_srt(cues, sp)
 
         safe_edit(bot, chat_id, message_id, "✅ Sending subtitles…")
-        safe_send_document(bot, chat_id, srt_path)
+        safe_send(bot, chat_id, sp)
 
     except Exception as e:
-        logger.error("Processing error", exc_info=True)
+        logger.error("Error in processing", exc_info=True)
         try:
             bot.send_message(chat_id, f"❌ Error: {e}")
-        except BadRequest:
-            logger.warning(f"Could not send error message to chat {chat_id}")
+        except:
+            pass
     finally:
-        if os.path.exists(video_path):
-            os.remove(video_path)
-        if os.path.exists(srt_path):
-            os.remove(srt_path)
+        if os.path.exists(vp): os.remove(vp)
+        if os.path.exists(sp): os.remove(sp)
 
-# ── Worker entrypoint ─────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    worker = Worker(["subtitle_extraction"], connection=redis_conn)
-    worker.work()
+    Worker(["subtitle_extraction"], connection=redis_conn).work()
